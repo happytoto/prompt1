@@ -16,12 +16,23 @@
 1. 사용자가 고른 엔진(또는 자동) → 실패 시 `PROVIDER_ORDER` 순서로 다음 엔진
 2. 공급사별 키 여러 개(쉼표) 로테이션, 401/403/429/5xx/시간초과 키는 쿨다운
 3. 전부 실패 → 규칙 기반 초안(앱은 항상 동작)
-4. 사용자 개인 키(BYOK)는 브라우저에만 저장, 서버에 저장·기록하지 않음
+4. 키 관리는 **관리자 로그인 후 앱 안에서만** 가능(공개 화면에는 키 입력란 없음)
+
+## 관리자 · 키 보안
+| 항목 | 방식 |
+|---|---|
+| 저장소 | Upstash Redis (Vercel Storage 연결 시 자동 설정) |
+| 키 저장 | AES-256-GCM 암호화, 화면에는 끝 4자리만 표시, 응답에 원문 미포함 |
+| 비밀번호 | scrypt 해시, 영문+숫자 10자 이상 |
+| 세션 | 무작위 토큰, `__Host-` HttpOnly·Secure·SameSite=Strict 쿠키, 8시간 |
+| 무차별 대입 | IP당 5회 실패 시 15분 잠금 |
+| CSRF | 변경 요청은 동일 출처(Origin)만 허용 |
+| 최초 설정 | 관리자가 없을 때 1회만 생성 가능(`ADMIN_SETUP_CODE` 설정 시 코드 필요) |
 
 ## 배포 (Vercel)
 1. Vercel → Add New → Project → 이 저장소 Import (Next.js 자동 인식)
-2. Settings → Environment Variables 에 `.env.example` 참고해 키 입력
-3. Deploy. 키 변경 후에는 Redeploy 필요
+2. Storage → Upstash for Redis 연결 → Redeploy
+3. 앱 → 엔진 설정 → 관리자 로그인 → 최초 비밀번호 생성 → 키 등록
 
 ## 로컬 실행
 ```

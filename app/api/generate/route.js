@@ -27,14 +27,13 @@ export async function POST(req) {
   const purpose = PURPOSES.some((p) => p.key === body.purpose) ? body.purpose : 'other';
   const answers = sanitizeMap(body.answers, 4, 300);
   const locked = sanitizeMap(body.locked, SECTIONS.length, 2000, SECTIONS.map((s) => s.key));
-  const byok = sanitizeMap(body.byok, 5, 300);
   const engine = String(body.engine || 'auto');
 
   // 서버측 이중 방어: 외부 AI로 보내기 전 민감정보 마스킹
   const safe = { input: maskSensitive(input), purpose, answers: mapVals(answers, maskSensitive), locked };
 
   const out = await routeGenerate({
-    engine, byok,
+    engine,
     system: buildSystemPrompt(),
     user: buildUserPrompt(safe),
     parse: parseResult,
