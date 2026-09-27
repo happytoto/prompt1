@@ -1,0 +1,10 @@
+{
+  "name": "한줄설계 · 프롬프트 1앱",
+  "short_name": "한줄설계",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#fbf7e9",
+  "theme_color": "#1f2a44",
+  "lang": "ko",
+  "icons": [{ "src": "/icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }]
+}
