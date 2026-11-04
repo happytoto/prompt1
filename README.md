@@ -33,8 +33,16 @@
 | 사용자 | 방법 |
 |---|---|
 | 내 기기(폰·PC) | 관리자 로그인 → 엔진 설정 → 관리자 → **앱 접근 → 이 기기 등록** (1년간 인증 없이 사용, 언제든 해제) |
+| Google 로그인 | 관리자 이메일 → 관리자, 허용 이메일 → 사용자 (30일, 목록에서 빼면 즉시 차단). PKCE·state·nonce 검증 |
 | 그 외 사람 | 관리자가 정한 **접근 암호** 입력 → 그 기기에서 30일 유지 (암호를 바꾸면 모두 만료) |
 | 접근 암호 미설정 | 내 기기·관리자만 사용 가능 |
+
+### Google 로그인 설정
+1. Google Cloud Console → API 및 서비스 → OAuth 동의 화면 구성(외부)
+2. 사용자 인증 정보 → OAuth 클라이언트 ID(웹 애플리케이션)
+   - 승인된 자바스크립트 원본: `https://hanjul-seolgye.vercel.app`
+   - 승인된 리디렉션 URI: `https://hanjul-seolgye.vercel.app/api/auth/google/callback`
+3. 앱 → 관리자 → Google 로그인 카드에 클라이언트 ID·보안 비밀·관리자 이메일 입력(보안 비밀은 암호화 저장)
 
 ## 배포 (Vercel)
 1. Vercel → Add New → Project → 이 저장소 Import (Next.js 자동 인식)

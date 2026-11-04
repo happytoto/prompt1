@@ -33,7 +33,8 @@ export default function Page() {
   const [consentSheet, setConsentSheet] = useState(false);
   const [history, setHistory] = useState([]);
   const [toast, setToast] = useState('');
-  const [access, setAccess] = useState(null); // { access, via, codeSet }
+  const [access, setAccess] = useState(null); // { access, via, codeSet, google }
+  const [authMsg, setAuthMsg] = useState(null);
   const [fullDraft, setFullDraft] = useState('');
   const [fullEdited, setFullEdited] = useState(false);
   const resultRef = useRef(null);
@@ -43,6 +44,17 @@ export default function Page() {
     setEngine(lsGet(LS.engine, 'auto'));
     try { localStorage.removeItem('hj.byok'); } catch {} // 이전 버전의 기기 저장 키 제거
     checkAccess();
+    // Google 로그인 결과 표시 후 주소 정리
+    try {
+      const q = new URLSearchParams(window.location.search);
+      const a = q.get('auth');
+      if (a) {
+        const M = { ok: 'Google 계정으로 로그인했습니다', denied: '허용되지 않은 Google 계정입니다. 관리자에게 등록을 요청하세요.', cancel: 'Google 로그인을 취소했습니다', expired: '로그인 시간이 지났습니다. 다시 시도하세요.', disabled: 'Google 로그인이 아직 설정되지 않았습니다.', nostore: '서버 저장소가 연결되지 않았습니다.', error: 'Google 로그인에 실패했습니다. 다시 시도하세요.' };
+        setAuthMsg({ ok: a === 'ok', text: M[a] || M.error });
+        if (q.get('to') === 'admin') setTab('admin');
+        window.history.replaceState(null, '', window.location.pathname);
+      }
+    } catch {}
   }, []);
 
   async function checkAccess() {
@@ -167,7 +179,7 @@ export default function Page() {
         )}
       </header>
 
-      {gated && tab !== 'admin' && <Gate status={access} onOk={checkAccess} openAdmin={() => setTab('admin')} />}
+      {gated && tab !== 'admin' && <Gate status={access} onOk={checkAccess} openAdmin={() => setTab('admin')} msg={authMsg} />}
 
       {!gated && tab === 'make' && (
         <main>
@@ -333,10 +345,11 @@ export default function Page() {
 
       {!gated && tab === 'settings' && (
         <Settings providers={providers} engine={engine} setEngine={(e) => { setEngine(e); lsSet(LS.engine, e); }}
-          openAdmin={() => setTab('admin')} />
+          openAdmin={() => setTab('admin')} access={access}
+          onLogout={async () => { try { await api('/api/access/logout', {}); } catch {} showToast('로그아웃했습니다'); checkAccess(); }} />
       )}
 
-      {tab === 'admin' && <Admin onBack={() => setTab(gated ? 'make' : 'settings')} onChanged={() => { checkAccess(); }} toast={showToast} />}
+      {tab === 'admin' && <Admin onBack={() => setTab(gated ? 'make' : 'settings')} onChanged={() => { checkAccess(); }} toast={showToast} google={Boolean(access?.google)} msg={authMsg} />}
 
       {!gated && tab === 'make' && result && (
         <div className="actionbar"><div className="inner">
@@ -408,7 +421,7 @@ function NavBtn({ on, onClick, label, d }) {
   );
 }
 
-function Settings({ providers, engine, setEngine, openAdmin }) {
+function Settings({ providers, engine, setEngine, openAdmin, access, onLogout }) {
   return (
     <main>
       <h2 className="title">AI 엔진 설정</h2>
@@ -441,6 +454,16 @@ function Settings({ providers, engine, setEngine, openAdmin }) {
         <p className="note" style={{ marginTop: 0 }}>API 키는 관리자 로그인 후 앱 안에서만 등록·삭제할 수 있습니다. 키는 서버에 암호화되어 저장되며 화면에는 끝 4자리만 표시됩니다.</p>
         <button className="btn block" style={{ marginTop: 10 }} onClick={openAdmin}>관리자 로그인</button>
       </div>
+
+      {access && ['google', 'code'].includes(access.via) && (
+        <>
+          <div className="label">내 접속</div>
+          <div className="card">
+            <div className="prov"><span>{access.via === 'google' ? `Google · ${access.email}` : '접근 암호로 입장'}</span>
+              <button className="btn sm ghost" onClick={onLogout}>로그아웃</button></div>
+          </div>
+        </>
+      )}
     </main>
   );
 }
@@ -454,7 +477,7 @@ async function api(path, body) {
   return j;
 }
 
-function Admin({ onBack, onChanged, toast }) {
+function Admin({ onBack, onChanged, toast, google, msg }) {
   const [status, setStatus] = useState(null);
   const [data, setData] = useState(null);
   const [err, setErr] = useState('');
@@ -514,6 +537,10 @@ function Admin({ onBack, onChanged, toast }) {
           onSubmit={(pw) => run(async () => { await api('/api/admin/login', { password: pw }); await refresh(); }, '로그인했습니다')}
         />
       )}
+      {status?.storeReady && !status.setupNeeded && !status.loggedIn && google && (
+        <a className="btn block google" style={{ marginTop: 12 }} href="/api/auth/google/start?for=admin"><GoogleMark /> Google 계정으로 관리자 로그인</a>
+      )}
+      {msg && !msg.ok && !status?.loggedIn && <p className="note" style={{ color: 'var(--err)' }} role="alert">{msg.text}</p>}
 
       {status?.loggedIn && data && <AdminPanel data={data} act={act} run={run} busy={busy} toast={toast}
         onLogout={() => run(async () => { await api('/api/admin/logout', {}); setData(null); await refresh(); }, '로그아웃했습니다')} />}
@@ -634,6 +661,8 @@ function AdminPanel({ data, act, run, busy, toast, onLogout }) {
 
       <AccessPanel run={run} busy={busy} />
 
+      <GooglePanel run={run} busy={busy} toast={toast} />
+
       <div className="card">
         <button className="btn block ghost" onClick={() => setPwOpen((v) => !v)}>비밀번호 변경</button>
         {pwOpen && <ChangePw busy={busy} onSubmit={(cur, next) => run(async () => { await api('/api/admin/config', { type: 'changePassword', current: cur, next }); setPwOpen(false); }, '비밀번호를 변경했습니다')} />}
@@ -656,7 +685,7 @@ function ChangePw({ busy, onSubmit }) {
 }
 
 // 비인증 사용자 입장 화면
-function Gate({ status, onOk, openAdmin }) {
+function Gate({ status, onOk, openAdmin, msg }) {
   const [code, setCode] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
@@ -669,8 +698,15 @@ function Gate({ status, onOk, openAdmin }) {
   }
   return (
     <main>
-      <h2 className="title">접근 암호를 입력하세요</h2>
-      <p className="sub">이 앱은 허용된 사용자만 쓸 수 있습니다. 한 번 입력하면 이 기기에서 30일간 유지됩니다.</p>
+      <h2 className="title">로그인이 필요합니다</h2>
+      <p className="sub">이 앱은 허용된 사용자만 쓸 수 있습니다. 한 번 로그인하면 이 기기에서 30일간 유지됩니다.</p>
+      {msg && <p className="note" style={{ color: msg.ok ? 'var(--ok)' : 'var(--err)', fontSize: 14 }} role="alert">{msg.text}</p>}
+      {status.google && (
+        <>
+          <a className="btn block google" href="/api/auth/google/start"><GoogleMark /> Google 계정으로 로그인</a>
+          <div className="or"><span>또는 접근 암호</span></div>
+        </>
+      )}
       <form className="card" onSubmit={submit}>
         <div className="field" style={{ marginTop: 0 }}><label htmlFor="ac">접근 암호</label>
           <input id="ac" type="password" autoComplete="off" autoFocus value={code} onChange={(e) => setCode(e.target.value)} /></div>
@@ -732,6 +768,59 @@ function AccessPanel({ run, busy }) {
           style={{ border: '1px solid var(--line)', background: 'var(--surface-2)', borderRadius: 10, padding: 10, minHeight: 44 }} />
         <button className="btn sm primary" style={{ flex: '0 0 auto' }} disabled={busy || !code}>저장</button>
       </form>
+    </div>
+  );
+}
+
+function GoogleMark() {
+  return (
+    <svg width="18" height="18" viewBox="0 0 48 48" aria-hidden="true">
+      <path fill="#EA4335" d="M24 9.5c3.5 0 6.6 1.2 9.1 3.6l6.8-6.8C35.8 2.4 30.3 0 24 0 14.6 0 6.6 5.4 2.7 13.3l7.9 6.1C12.5 13.6 17.8 9.5 24 9.5z" />
+      <path fill="#4285F4" d="M46.1 24.5c0-1.6-.1-3.1-.4-4.5H24v9h12.4c-.5 2.9-2.2 5.3-4.6 6.9l7.4 5.7c4.3-4 6.9-9.9 6.9-17.1z" />
+      <path fill="#FBBC05" d="M10.6 28.6c-.5-1.4-.8-3-.8-4.6s.3-3.2.8-4.6l-7.9-6.1C1 16.6 0 20.2 0 24s1 7.4 2.7 10.7l7.9-6.1z" />
+      <path fill="#34A853" d="M24 48c6.5 0 11.9-2.1 15.9-5.8l-7.4-5.7c-2.1 1.4-4.8 2.3-8.5 2.3-6.2 0-11.5-4.1-13.4-9.9l-7.9 6.1C6.6 42.6 14.6 48 24 48z" />
+    </svg>
+  );
+}
+
+// 관리자: Google 로그인 설정
+function GooglePanel({ run, busy, toast }) {
+  const [g, setG] = useState(null);
+  const [f, setF] = useState({ clientId: '', clientSecret: '', adminEmails: '', userEmails: '' });
+  const load = (v) => { setG(v); setF({ clientId: v.clientId || '', clientSecret: '', adminEmails: (v.adminEmails || []).join('\n'), userEmails: (v.userEmails || []).join('\n') }); };
+  useEffect(() => { api('/api/admin/google').then(load).catch(() => {}); }, []);
+  if (!g) return <div className="card"><div className="note">Google 로그인 설정 불러오는 중…</div></div>;
+  const copy = async (t) => { try { await navigator.clipboard.writeText(t); toast('복사했습니다'); } catch {} };
+  const save = () => run(async () => {
+    const body = { clientId: f.clientId, adminEmails: f.adminEmails, userEmails: f.userEmails };
+    if (f.clientSecret) body.clientSecret = f.clientSecret;
+    load(await api('/api/admin/google', body));
+  }, 'Google 로그인 설정을 저장했습니다');
+  const ta = { width: '100%', minHeight: 72, border: '1px solid var(--line)', background: 'var(--surface-2)', borderRadius: 10, padding: 10, fontSize: 14, resize: 'vertical', outline: 0 };
+  return (
+    <div className="card">
+      <div className="sec-head">
+        <div className="sec-name">Google 로그인</div>
+        <span className={'badge' + (g.enabled ? ' ok' : '')}>{g.enabled ? '사용 중' : '미설정'}</span>
+      </div>
+      <p className="note">관리자 이메일은 관리자 권한, 허용 이메일은 앱 사용 권한을 받습니다. 목록에서 지우면 즉시 차단됩니다.</p>
+
+      <div className="label" style={{ margin: '12px 0 4px' }}>Google Cloud에 등록할 값</div>
+      <div className="prov"><span className="note" style={{ wordBreak: 'break-all' }}>승인된 자바스크립트 원본<br /><code>{g.origin}</code></span>
+        <button className="btn sm ghost" onClick={() => copy(g.origin)}>복사</button></div>
+      <div className="prov"><span className="note" style={{ wordBreak: 'break-all' }}>승인된 리디렉션 URI<br /><code>{g.redirectUri}</code></span>
+        <button className="btn sm ghost" onClick={() => copy(g.redirectUri)}>복사</button></div>
+
+      <div className="field"><label htmlFor="gcid">클라이언트 ID</label>
+        <input id="gcid" value={f.clientId} placeholder="…apps.googleusercontent.com" onChange={(e) => setF({ ...f, clientId: e.target.value.trim() })} /></div>
+      <div className="field"><label htmlFor="gcs">클라이언트 보안 비밀 {g.secretHint && <span className="note">(저장됨 {g.secretHint})</span>}</label>
+        <input id="gcs" type="password" autoComplete="off" value={f.clientSecret} placeholder={g.secretHint ? '바꿀 때만 입력' : 'GOCSPX-…'} onChange={(e) => setF({ ...f, clientSecret: e.target.value.trim() })} /></div>
+      <div className="field"><label htmlFor="gad">관리자 이메일 (줄바꿈·쉼표로 구분)</label>
+        <textarea id="gad" style={ta} value={f.adminEmails} placeholder="나@gmail.com" onChange={(e) => setF({ ...f, adminEmails: e.target.value })} /></div>
+      <div className="field"><label htmlFor="gus">허용 사용자 이메일</label>
+        <textarea id="gus" style={ta} value={f.userEmails} placeholder="friend@gmail.com" onChange={(e) => setF({ ...f, userEmails: e.target.value })} /></div>
+      <button className="btn primary block" style={{ marginTop: 12 }} disabled={busy} onClick={save}>저장</button>
+      {!g.enabled && <p className="note">클라이언트 ID·보안 비밀·관리자 이메일 1개 이상이 모두 있어야 로그인 버튼이 나타납니다.</p>}
     </div>
   );
 }

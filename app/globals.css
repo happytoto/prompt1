@@ -154,3 +154,8 @@ textarea.main {
 
 .full-edit textarea.full { width: 100%; min-height: 320px; border: 1px solid var(--line); background: var(--surface-2); border-radius: 10px; padding: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Noto Sans KR", monospace; font-size: 14px; line-height: 1.6; resize: vertical; outline: 0; }
 .full-edit textarea.full:focus { border-color: var(--accent); background: var(--surface); }
+.btn.google { gap: 10px; text-decoration: none; color: var(--ink); background: var(--surface); }
+.or { display: flex; align-items: center; gap: 10px; color: var(--muted); font-size: 12px; margin: 16px 0 8px; }
+.or::before, .or::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+.row > input { min-width: 0; }
+.btn.sm { white-space: nowrap; flex-shrink: 0; }
