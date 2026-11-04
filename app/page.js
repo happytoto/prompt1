@@ -33,18 +33,32 @@ export default function Page() {
   const [consentSheet, setConsentSheet] = useState(false);
   const [history, setHistory] = useState([]);
   const [toast, setToast] = useState('');
+  const [access, setAccess] = useState(null); // { access, via, codeSet }
+  const [fullDraft, setFullDraft] = useState('');
+  const [fullEdited, setFullEdited] = useState(false);
   const resultRef = useRef(null);
 
   useEffect(() => {
     setHistory(lsGet(LS.hist, []));
     setEngine(lsGet(LS.engine, 'auto'));
     try { localStorage.removeItem('hj.byok'); } catch {} // 이전 버전의 기기 저장 키 제거
-    loadProviders();
+    checkAccess();
   }, []);
+
+  async function checkAccess() {
+    try {
+      const a = await fetch('/api/access/status', { cache: 'no-store' }).then((r) => r.json());
+      setAccess(a);
+      if (a.access) loadProviders();
+    } catch { setAccess({ access: false }); }
+  }
 
   function loadProviders() {
     fetch('/api/providers', { cache: 'no-store' }).then((r) => r.json()).then((j) => setProviders(j.providers || [])).catch(() => {});
   }
+
+  // 전체 프롬프트: 직접 고치기 전까지는 항목 내용과 자동 동기화
+  useEffect(() => { if (!fullEdited) setFullDraft(assemblePrompt(sections)); }, [sections, fullEdited]);
 
   const recommended = useMemo(() => guessPurpose(input), [input]);
   useEffect(() => { if (!purposeTouched) setPurpose(recommended); }, [recommended, purposeTouched]);
@@ -82,8 +96,10 @@ export default function Page() {
         body: JSON.stringify({ input: text, purpose, engine, answers: ans, locked: lockedPayload }),
       });
       const j = await r.json();
+      if (j.needAccess) { setAccess((a) => ({ ...a, access: false })); return; }
       if (!r.ok) throw new Error(j.error || '생성 실패');
       setResult(j);
+      setFullEdited(false);
       setSections(j.sections);
       if (!keepLocked) setLocked({});
       if (Object.keys(ans).length) setAnswers({});
@@ -100,7 +116,7 @@ export default function Page() {
     setLocked((l) => ({ ...l, [k]: true }));
   }
 
-  const fullText = () => assemblePrompt(sections);
+  const fullText = () => fullDraft || assemblePrompt(sections);
 
   async function copy() {
     const t = fullText();
@@ -121,33 +137,39 @@ export default function Page() {
     doSave();
   }
   function doSave() {
-    const item = { id: Date.now().toString(36), ts: Date.now(), input, purpose, sections, engine: result?.engine };
+    const item = { id: Date.now().toString(36), ts: Date.now(), input, purpose, sections, full: fullEdited ? fullDraft : undefined, engine: result?.engine };
     const next = [item, ...history].slice(0, 50);
     setHistory(next); lsSet(LS.hist, next); showToast('이 기기에 저장했습니다');
   }
   function openHistory(h) {
     setInput(h.input); setPurpose(h.purpose); setPurposeTouched(true);
     setSections(h.sections); setResult({ sections: h.sections, questions: [], engine: h.engine, trail: [], fromHistory: true });
+    if (h.full) { setFullDraft(h.full); setFullEdited(true); } else setFullEdited(false);
     setLocked({}); setTab('make');
     setTimeout(() => resultRef.current?.scrollIntoView({ block: 'start' }), 50);
   }
   function removeHistory(id) { const n = history.filter((h) => h.id !== id); setHistory(n); lsSet(LS.hist, n); }
   function clearHistory() { setHistory([]); lsSet(LS.hist, []); showToast('내역을 모두 삭제했습니다'); }
-  function reset() { setResult(null); setSections({}); setLocked({}); setAnswers({}); setInput(''); setPurposeTouched(false); window.scrollTo({ top: 0 }); }
+  function reset() { setFullEdited(false); setResult(null); setSections({}); setLocked({}); setAnswers({}); setInput(''); setPurposeTouched(false); window.scrollTo({ top: 0 }); }
 
   const engineLabel = engine === 'auto' ? '자동' : (providers.find((p) => p.id === engine)?.label || engine);
   const configuredCount = providers.filter((p) => p.configured).length;
+  const gated = !access || !access.access;
 
   return (
     <div className="app">
       <header className="top">
         <div className="brand">한줄설계<small>프롬프트 1앱</small></div>
-        <button className="engine-pill" onClick={() => setTab('settings')} aria-label="AI 엔진 설정">
-          엔진: {engineLabel}{configuredCount ? '' : ' · 기본'}
-        </button>
+        {!gated && (
+          <button className="engine-pill" onClick={() => setTab('settings')} aria-label="AI 엔진 설정">
+            엔진: {engineLabel}{configuredCount ? '' : ' · 기본'}
+          </button>
+        )}
       </header>
 
-      {tab === 'make' && (
+      {gated && tab !== 'admin' && <Gate status={access} onOk={checkAccess} openAdmin={() => setTab('admin')} />}
+
+      {!gated && tab === 'make' && (
         <main>
           <h2 className="title">하고 싶은 일을<br />한 줄로 적어 주세요</h2>
           <p className="sub">역할·맥락·입력·처리·출력·검증·보안을 갖춘 프롬프트로 바꿔 드립니다.</p>
@@ -258,6 +280,24 @@ export default function Page() {
                 <p className="note" style={{ marginTop: 8 }}>자동 점검은 형식 누락·모순만 확인하며, 결과의 정확성을 보증하지 않습니다.</p>
               </div>
 
+              <div className="card full-edit">
+                <div className="sec-head">
+                  <div className="sec-name">전체 프롬프트 편집</div>
+                  <span className={'lock' + (fullEdited ? ' on' : '')}>{fullEdited ? '직접 수정됨' : '자동 반영'}</span>
+                </div>
+                <p className="note" style={{ margin: '0 0 8px' }}>AI에 붙여 넣을 최종본입니다. 여기서 고친 내용이 복사·공유·저장에 그대로 쓰입니다.</p>
+                <textarea className="full" value={fullDraft} aria-label="전체 프롬프트 편집"
+                  onChange={(e) => { setFullDraft(e.target.value); setFullEdited(true); }} />
+                <div className="row" style={{ marginTop: 8, alignItems: 'center' }}>
+                  <span className="note">{fullDraft.length.toLocaleString()}자</span>
+                  {fullEdited && (
+                    <button className="btn sm ghost" style={{ flex: '0 0 auto' }}
+                      onClick={() => { setFullEdited(false); setFullDraft(assemblePrompt(sections)); }}>위 항목 내용으로 되돌리기</button>
+                  )}
+                  <button className="btn sm primary" style={{ flex: '0 0 auto' }} onClick={copy}>복사</button>
+                </div>
+              </div>
+
               <div className="row">
                 <button className="btn" disabled={loading} onClick={() => requestGenerate({ keepLocked: true })}>
                   {loading ? <span className="spinner" /> : '전체 재생성'}
@@ -270,7 +310,7 @@ export default function Page() {
         </main>
       )}
 
-      {tab === 'history' && (
+      {!gated && tab === 'history' && (
         <main>
           <h2 className="title">최근 생성 내역</h2>
           <p className="sub">이 기기의 브라우저에만 보관됩니다. 서버에는 저장하지 않습니다.</p>
@@ -291,14 +331,14 @@ export default function Page() {
         </main>
       )}
 
-      {tab === 'settings' && (
+      {!gated && tab === 'settings' && (
         <Settings providers={providers} engine={engine} setEngine={(e) => { setEngine(e); lsSet(LS.engine, e); }}
           openAdmin={() => setTab('admin')} />
       )}
 
-      {tab === 'admin' && <Admin onBack={() => setTab('settings')} onChanged={loadProviders} toast={showToast} />}
+      {tab === 'admin' && <Admin onBack={() => setTab(gated ? 'make' : 'settings')} onChanged={() => { checkAccess(); }} toast={showToast} />}
 
-      {tab === 'make' && result && (
+      {!gated && tab === 'make' && result && (
         <div className="actionbar"><div className="inner">
           <button className="btn primary" onClick={copy}>복사</button>
           <button className="btn" onClick={share}>공유</button>
@@ -307,11 +347,11 @@ export default function Page() {
         </div></div>
       )}
 
-      <nav className="nav"><div className="inner">
+      {!gated && <nav className="nav"><div className="inner">
         <NavBtn on={tab === 'make'} onClick={() => setTab('make')} label="만들기" d="M12 5v14M5 12h14" />
         <NavBtn on={tab === 'history'} onClick={() => setTab('history')} label="내역" d="M4 6h16M4 12h16M4 18h10" />
         <NavBtn on={tab === 'settings' || tab === 'admin'} onClick={() => setTab('settings')} label="엔진 설정" d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19 12h2M3 12h2M12 3v2M12 19v2" />
-      </div></nav>
+      </div></nav>}
 
       {sens && (
         <div className="sheet-bg" onClick={() => setSens(null)}>
@@ -592,6 +632,8 @@ function AdminPanel({ data, act, run, busy, toast, onLogout }) {
         );
       })}
 
+      <AccessPanel run={run} busy={busy} />
+
       <div className="card">
         <button className="btn block ghost" onClick={() => setPwOpen((v) => !v)}>비밀번호 변경</button>
         {pwOpen && <ChangePw busy={busy} onSubmit={(cur, next) => run(async () => { await api('/api/admin/config', { type: 'changePassword', current: cur, next }); setPwOpen(false); }, '비밀번호를 변경했습니다')} />}
@@ -610,5 +652,86 @@ function ChangePw({ busy, onSubmit }) {
       <div className="field"><label>새 비밀번호 확인</label><input type="password" autoComplete="new-password" value={n2} onChange={(e) => setN2(e.target.value)} /></div>
       <button className="btn primary block" style={{ marginTop: 10 }} disabled={busy || !cur || !n1 || n1 !== n2}>변경</button>
     </form>
+  );
+}
+
+// 비인증 사용자 입장 화면
+function Gate({ status, onOk, openAdmin }) {
+  const [code, setCode] = useState('');
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  if (!status) return <main><div className="note" style={{ marginTop: 40, textAlign: 'center' }}>확인 중…</div></main>;
+  async function submit(e) {
+    e.preventDefault(); setBusy(true); setErr('');
+    try { await api('/api/access/login', { code }); setCode(''); await onOk(); }
+    catch (e2) { setErr(e2.message); }
+    finally { setBusy(false); }
+  }
+  return (
+    <main>
+      <h2 className="title">접근 암호를 입력하세요</h2>
+      <p className="sub">이 앱은 허용된 사용자만 쓸 수 있습니다. 한 번 입력하면 이 기기에서 30일간 유지됩니다.</p>
+      <form className="card" onSubmit={submit}>
+        <div className="field" style={{ marginTop: 0 }}><label htmlFor="ac">접근 암호</label>
+          <input id="ac" type="password" autoComplete="off" autoFocus value={code} onChange={(e) => setCode(e.target.value)} /></div>
+        {err && <p className="note" style={{ color: 'var(--err)' }} role="alert">{err}</p>}
+        <button className="btn primary block" style={{ marginTop: 12 }} disabled={busy || !code}>{busy ? <span className="spinner" /> : '입장'}</button>
+      </form>
+      <button className="btn block ghost" style={{ marginTop: 16 }} onClick={openAdmin}>관리자 로그인</button>
+    </main>
+  );
+}
+
+function deviceName() {
+  if (typeof navigator === 'undefined') return '내 기기';
+  const ua = navigator.userAgent;
+  if (/iPhone/.test(ua)) return '내 iPhone';
+  if (/iPad/.test(ua)) return '내 iPad';
+  if (/Android/.test(ua)) return /Mobile/.test(ua) ? '내 Android 폰' : '내 Android 태블릿';
+  if (/Windows/.test(ua)) return '내 Windows PC';
+  if (/Macintosh/.test(ua)) return '내 Mac';
+  return '내 기기';
+}
+
+// 관리자: 접근 암호 · 내 기기 관리
+function AccessPanel({ run, busy }) {
+  const [st, setSt] = useState(null);
+  const [code, setCode] = useState('');
+  const [name, setName] = useState('');
+  useEffect(() => { setName(deviceName()); api('/api/admin/access').then(setSt).catch(() => {}); }, []);
+  const act = (b, msg) => run(async () => { const r = await api('/api/admin/access', b); setSt(r); return r; }, msg);
+  if (!st) return <div className="card"><div className="note">앱 접근 설정 불러오는 중…</div></div>;
+  const current = st.devices.find((d) => d.current);
+  return (
+    <div className="card">
+      <div className="sec-name">앱 접근</div>
+      <p className="note">등록한 내 기기는 인증 없이 바로 쓰고, 그 외 사람은 접근 암호를 입력해야 합니다.</p>
+
+      <div className="label" style={{ margin: '12px 0 4px' }}>내 기기 (인증 없이 사용)</div>
+      {st.devices.length === 0 && <div className="note">등록된 기기 없음</div>}
+      {st.devices.map((d) => (
+        <div key={d.id} className="prov">
+          <span>{d.name}{d.current && <span className="badge ok" style={{ marginLeft: 6 }}>이 기기</span>}
+            <span className="note" style={{ display: 'block' }}>{new Date(d.createdAt).toLocaleDateString('ko-KR')} 등록</span></span>
+          <button className="btn sm ghost" disabled={busy} onClick={() => { if (window.confirm(`'${d.name}' 등록을 해제할까요?`)) act({ type: 'revoke', id: d.id }, '기기 등록을 해제했습니다'); }}>해제</button>
+        </div>
+      ))}
+      {!current && (
+        <form className="row" style={{ marginTop: 8 }} onSubmit={(e) => { e.preventDefault(); act({ type: 'trust', name }, '이 기기를 내 기기로 등록했습니다'); }}>
+          <input value={name} onChange={(e) => setName(e.target.value)} aria-label="기기 이름" maxLength={40}
+            style={{ border: '1px solid var(--line)', background: 'var(--surface-2)', borderRadius: 10, padding: 10, minHeight: 44 }} />
+          <button className="btn sm primary" style={{ flex: '0 0 auto' }} disabled={busy}>이 기기 등록</button>
+        </form>
+      )}
+
+      <div className="label" style={{ margin: '16px 0 4px' }}>접근 암호 (다른 사람용)</div>
+      <div className="note">{st.code.set ? `설정됨 · ${new Date(st.code.setAt).toLocaleString('ko-KR', { dateStyle: 'short', timeStyle: 'short' })}` : '미설정 — 지금은 내 기기·관리자만 사용할 수 있습니다.'}</div>
+      {st.code.set && st.code.weak && <div className="note" style={{ color: 'var(--warn)' }}>짧은 암호는 추측되기 쉽습니다. 6자 이상을 권장합니다.</div>}
+      <form className="row" style={{ marginTop: 8 }} onSubmit={(e) => { e.preventDefault(); act({ type: 'setCode', code }, '접근 암호를 저장했습니다. 기존 입장 기록은 모두 만료됩니다.').then((r) => r && setCode('')); }}>
+        <input type="password" autoComplete="new-password" value={code} placeholder={st.code.set ? '새 접근 암호' : '접근 암호 정하기'} onChange={(e) => setCode(e.target.value)} aria-label="접근 암호"
+          style={{ border: '1px solid var(--line)', background: 'var(--surface-2)', borderRadius: 10, padding: 10, minHeight: 44 }} />
+        <button className="btn sm primary" style={{ flex: '0 0 auto' }} disabled={busy || !code}>저장</button>
+      </form>
+    </div>
   );
 }

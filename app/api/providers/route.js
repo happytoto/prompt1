@@ -1,9 +1,11 @@
 import { NextResponse } from 'next/server';
 import { listProviders } from '@/lib/router';
+import { requireAccess } from '@/lib/access';
 
 export const dynamic = 'force-dynamic';
 
-export async function GET() {
+export async function GET(req) {
+  const denied = await requireAccess(req); if (denied) return denied;
   // 키 값은 절대 노출하지 않고, 설정 여부만 반환
   return NextResponse.json({ providers: await listProviders() }, { headers: { 'cache-control': 'no-store' } });
 }

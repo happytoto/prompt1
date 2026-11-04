@@ -151,3 +151,6 @@ textarea.main {
 .skeleton { height: 64px; border-radius: 10px; background: linear-gradient(90deg, var(--surface-2), var(--surface), var(--surface-2)); background-size: 200% 100%; animation: sh 1.2s infinite; }
 @keyframes sh { to { background-position: -200% 0; } }
 @media (prefers-reduced-motion: reduce) { .spinner, .skeleton { animation: none; } }
+
+.full-edit textarea.full { width: 100%; min-height: 320px; border: 1px solid var(--line); background: var(--surface-2); border-radius: 10px; padding: 12px; font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Noto Sans KR", monospace; font-size: 14px; line-height: 1.6; resize: vertical; outline: 0; }
+.full-edit textarea.full:focus { border-color: var(--accent); background: var(--surface); }

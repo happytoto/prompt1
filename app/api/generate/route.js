@@ -3,6 +3,7 @@ import { routeGenerate } from '@/lib/router';
 import { buildSystemPrompt, buildUserPrompt, parseResult, templateResult } from '@/lib/prompt';
 import { maskSensitive } from '@/lib/security';
 import { SECTIONS, PURPOSES } from '@/lib/sections';
+import { requireAccess } from '@/lib/access';
 
 export const runtime = 'nodejs';
 export const maxDuration = 60;
@@ -13,6 +14,7 @@ const hits = globalThis.__hjHits || (globalThis.__hjHits = new Map());
 const LIMIT = Number(process.env.RATE_LIMIT_PER_MIN || 20);
 
 export async function POST(req) {
+  const denied = await requireAccess(req); if (denied) return denied;
   const ip = (req.headers.get('x-forwarded-for') || 'local').split(',')[0].trim();
   const now = Date.now();
   const h = (hits.get(ip) || []).filter((t) => now - t < 60_000);
