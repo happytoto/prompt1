@@ -68,8 +68,29 @@ export default function Page() {
       const a = await fetch('/api/access/status', { cache: 'no-store' }).then((r) => r.json());
       setAccess(a);
       if (a.access) loadProviders();
+      else if (a.googleClientId) autoGoogle(a.googleClientId);
       return a;
     } catch { setAccess({ access: false }); return { access: false }; }
+  }
+
+  // 승인된 Google 계정은 버튼 없이 자동 로그인(이 브라우저에서 한 번 로그인한 적이 있으면 즉시)
+  const autoTried = useRef(false);
+  async function autoGoogle(clientId) {
+    if (autoTried.current) return; autoTried.current = true;
+    try {
+      const [{ nonce }] = await Promise.all([api('/api/auth/google/nonce'), loadGsi()]);
+      window.google.accounts.id.initialize({
+        client_id: clientId, nonce, auto_select: true, use_fedcm_for_prompt: true, cancel_on_tap_outside: true,
+        callback: async (resp) => {
+          try {
+            const r = await api('/api/auth/google/token', { credential: resp.credential });
+            showToast(`${r.email} 계정으로 자동 로그인했습니다`);
+            await afterLogin();
+          } catch (e) { setAuthMsg({ ok: false, text: e.message }); }
+        },
+      });
+      window.google.accounts.id.prompt();
+    } catch { /* 자동 로그인 불가 시 기존 로그인 창 사용 */ }
   }
 
   // 로그인 창에서 인증 성공 → 창 닫고 대기 중이던 생성 이어서 실행
@@ -867,6 +888,15 @@ function GooglePanel({ run, busy, toast }) {
   );
 }
 
+function loadGsi() {
+  return new Promise((ok, fail) => {
+    if (window.google?.accounts?.id) return ok();
+    let sc = document.getElementById('gsi-client');
+    if (!sc) { sc = document.createElement('script'); sc.id = 'gsi-client'; sc.src = 'https://accounts.google.com/gsi/client'; sc.async = true; document.head.appendChild(sc); }
+    sc.addEventListener('load', () => ok()); sc.addEventListener('error', () => fail(new Error('Google 로그인 스크립트를 불러오지 못했습니다.')));
+  });
+}
+
 // Google Identity Services 'Google로 로그인' 버튼(보안 비밀 불필요, 서버가 ID 토큰 서명 검증)
 function GoogleButton({ clientId, onDone }) {
   const ref = useRef(null);
@@ -875,15 +905,9 @@ function GoogleButton({ clientId, onDone }) {
   useEffect(() => {
     if (!clientId) return;
     let alive = true;
-    const load = () => new Promise((ok, fail) => {
-      if (window.google?.accounts?.id) return ok();
-      let sc = document.getElementById('gsi-client');
-      if (!sc) { sc = document.createElement('script'); sc.id = 'gsi-client'; sc.src = 'https://accounts.google.com/gsi/client'; sc.async = true; document.head.appendChild(sc); }
-      sc.addEventListener('load', () => ok()); sc.addEventListener('error', () => fail(new Error('Google 로그인 스크립트를 불러오지 못했습니다.')));
-    });
     (async () => {
       try {
-        const [{ nonce }] = await Promise.all([api('/api/auth/google/nonce'), load()]);
+        const [{ nonce }] = await Promise.all([api('/api/auth/google/nonce'), loadGsi()]);
         if (!alive || !ref.current) return;
         window.google.accounts.id.initialize({
           client_id: clientId, nonce, ux_mode: 'popup', auto_select: false, use_fedcm_for_prompt: true,
