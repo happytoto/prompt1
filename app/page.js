@@ -375,7 +375,7 @@ export default function Page() {
           onLogout={async () => { try { await api('/api/access/logout', {}); } catch {} showToast('로그아웃했습니다'); checkAccess(); }} />
       )}
 
-      {tab === 'admin' && <Admin onBack={() => setTab('settings')} onChanged={() => { checkAccess(); }} toast={showToast} google={Boolean(access?.google)} msg={authMsg} />}
+      {tab === 'admin' && <Admin onBack={() => setTab('settings')} onChanged={() => { checkAccess(); }} toast={showToast} google={access?.googleClientId || ''} msg={authMsg} />}
 
       {tab === 'make' && result && (
         <div className="actionbar"><div className="inner">
@@ -574,7 +574,7 @@ function Admin({ onBack, onChanged, toast, google, msg }) {
         />
       )}
       {status?.storeReady && !status.setupNeeded && !status.loggedIn && google && (
-        <a className="btn block google" style={{ marginTop: 12 }} href="/api/auth/google/start?for=admin"><GoogleMark /> Google 계정으로 관리자 로그인</a>
+        <div style={{ marginTop: 12 }}><GoogleButton clientId={google} onDone={async () => { await refresh(); onChanged(); }} /></div>
       )}
       {msg && !msg.ok && !status?.loggedIn && <p className="note" style={{ color: 'var(--err)' }} role="alert">{msg.text}</p>}
 
@@ -742,7 +742,7 @@ function Gate({ status, onOk, openAdmin, msg, onGoogle, onClose }) {
       {msg && <p className="note" style={{ color: msg.ok ? 'var(--ok)' : 'var(--err)', fontSize: 14 }} role="alert">{msg.text}</p>}
       {status.google && (
         <>
-          <a className="btn block google" href="/api/auth/google/start" onClick={onGoogle}><GoogleMark /> Google 계정으로 로그인</a>
+          <GoogleButton clientId={status.googleClientId} onDone={onOk} />
           <div className="or"><span>또는 접근 암호</span></div>
         </>
       )}
@@ -859,7 +859,53 @@ function GooglePanel({ run, busy, toast }) {
       <div className="field"><label htmlFor="gus">허용 사용자 이메일</label>
         <textarea id="gus" style={ta} value={f.userEmails} placeholder="friend@gmail.com" onChange={(e) => setF({ ...f, userEmails: e.target.value })} /></div>
       <button className="btn primary block" style={{ marginTop: 12 }} disabled={busy} onClick={save}>저장</button>
-      {!g.enabled && <p className="note">클라이언트 ID·보안 비밀·관리자 이메일 1개 이상이 모두 있어야 로그인 버튼이 나타납니다.</p>}
+      {(g.envAdminEmails?.length > 0 || g.envUserEmails?.length > 0 || g.envClientId) && (
+        <p className="note">서버 환경변수 설정도 함께 적용 중: {g.envClientId && '클라이언트 ID · '}관리자 {g.envAdminEmails?.join(', ') || '없음'} · 사용자 {g.envUserEmails?.join(', ') || '없음'}</p>
+      )}
+      {!g.enabled && <p className="note">클라이언트 ID와 관리자 이메일 1개 이상이 있으면 'Google로 로그인' 버튼이 나타납니다(보안 비밀은 선택).</p>}
+    </div>
+  );
+}
+
+// Google Identity Services 'Google로 로그인' 버튼(보안 비밀 불필요, 서버가 ID 토큰 서명 검증)
+function GoogleButton({ clientId, onDone }) {
+  const ref = useRef(null);
+  const [err, setErr] = useState('');
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    if (!clientId) return;
+    let alive = true;
+    const load = () => new Promise((ok, fail) => {
+      if (window.google?.accounts?.id) return ok();
+      let sc = document.getElementById('gsi-client');
+      if (!sc) { sc = document.createElement('script'); sc.id = 'gsi-client'; sc.src = 'https://accounts.google.com/gsi/client'; sc.async = true; document.head.appendChild(sc); }
+      sc.addEventListener('load', () => ok()); sc.addEventListener('error', () => fail(new Error('Google 로그인 스크립트를 불러오지 못했습니다.')));
+    });
+    (async () => {
+      try {
+        const [{ nonce }] = await Promise.all([api('/api/auth/google/nonce'), load()]);
+        if (!alive || !ref.current) return;
+        window.google.accounts.id.initialize({
+          client_id: clientId, nonce, ux_mode: 'popup', auto_select: false, use_fedcm_for_prompt: true,
+          callback: async (resp) => {
+            setBusy(true); setErr('');
+            try { await api('/api/auth/google/token', { credential: resp.credential }); await onDone?.(); }
+            catch (e) { setErr(e.message); }
+            finally { setBusy(false); }
+          },
+        });
+        ref.current.innerHTML = '';
+        window.google.accounts.id.renderButton(ref.current, { theme: 'outline', size: 'large', text: 'signin_with', shape: 'pill', locale: 'ko', width: Math.min(360, ref.current.offsetWidth || 320) });
+      } catch (e) { if (alive) setErr(e.message); }
+    })();
+    return () => { alive = false; };
+  }, [clientId]);
+  if (!clientId) return null;
+  return (
+    <div>
+      <div ref={ref} style={{ display: 'flex', justifyContent: 'center', minHeight: 44 }} />
+      {busy && <p className="note" style={{ textAlign: 'center' }}>확인 중…</p>}
+      {err && <p className="note" style={{ color: 'var(--err)' }} role="alert">{err}</p>}
     </div>
   );
 }
