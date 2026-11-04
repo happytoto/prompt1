@@ -4,12 +4,9 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { SECTIONS, PURPOSES, guessPurpose, assemblePrompt } from '@/lib/sections';
 import { detectSensitive, maskSensitive } from '@/lib/security';
 import { checkQuality } from '@/lib/quality';
+import { DEMOS, findDemo } from '@/lib/demo';
 
-const EXAMPLES = [
-  '골프 초보를 위한 드라이버 슬라이스 교정 쇼츠 대본 써줘',
-  '월별 매출 엑셀을 분석해서 줄어든 원인을 찾아줘',
-  '반려견 산책 앱 소개용 썸네일 이미지를 만들고 싶어',
-];
+const EXAMPLES = DEMOS.map((d) => d.input);
 
 const LS = { hist: 'hj.history', consent: 'hj.saveConsent', engine: 'hj.engine' };
 const lsGet = (k, d) => { try { const v = localStorage.getItem(k); return v ? JSON.parse(v) : d; } catch { return d; } };
@@ -37,12 +34,19 @@ export default function Page() {
   const [authMsg, setAuthMsg] = useState(null);
   const [fullDraft, setFullDraft] = useState('');
   const [fullEdited, setFullEdited] = useState(false);
+  const [loginOpen, setLoginOpen] = useState(false);
+  const pendingRef = useRef(null); // 로그인 후 이어서 실행할 생성 요청
   const resultRef = useRef(null);
 
   useEffect(() => {
     setHistory(lsGet(LS.hist, []));
     setEngine(lsGet(LS.engine, 'auto'));
     try { localStorage.removeItem('hj.byok'); } catch {} // 이전 버전의 기기 저장 키 제거
+    // Google 로그인으로 페이지를 떠났다 돌아온 경우 입력 복원
+    try {
+      const d = JSON.parse(sessionStorage.getItem('hj.draft') || 'null');
+      if (d) { setInput(d.input || ''); if (d.purpose) { setPurpose(d.purpose); setPurposeTouched(true); } sessionStorage.removeItem('hj.draft'); }
+    } catch {}
     checkAccess();
     // Google 로그인 결과 표시 후 주소 정리
     try {
@@ -52,6 +56,8 @@ export default function Page() {
         const M = { ok: 'Google 계정으로 로그인했습니다', denied: '허용되지 않은 Google 계정입니다. 관리자에게 등록을 요청하세요.', cancel: 'Google 로그인을 취소했습니다', expired: '로그인 시간이 지났습니다. 다시 시도하세요.', disabled: 'Google 로그인이 아직 설정되지 않았습니다.', nostore: '서버 저장소가 연결되지 않았습니다.', error: 'Google 로그인에 실패했습니다. 다시 시도하세요.' };
         setAuthMsg({ ok: a === 'ok', text: M[a] || M.error });
         if (q.get('to') === 'admin') setTab('admin');
+        else if (a !== 'ok') setLoginOpen(true);
+        else showToast(M.ok);
         window.history.replaceState(null, '', window.location.pathname);
       }
     } catch {}
@@ -62,7 +68,17 @@ export default function Page() {
       const a = await fetch('/api/access/status', { cache: 'no-store' }).then((r) => r.json());
       setAccess(a);
       if (a.access) loadProviders();
-    } catch { setAccess({ access: false }); }
+      return a;
+    } catch { setAccess({ access: false }); return { access: false }; }
+  }
+
+  // 로그인 창에서 인증 성공 → 창 닫고 대기 중이던 생성 이어서 실행
+  async function afterLogin() {
+    const a = await checkAccess();
+    if (!a.access) return;
+    setLoginOpen(false); setAuthMsg(null);
+    const p = pendingRef.current; pendingRef.current = null;
+    if (p) setTimeout(() => requestGenerate({ ...p, force: true }), 0);
   }
 
   function loadProviders() {
@@ -81,9 +97,22 @@ export default function Page() {
   function showToast(m) { setToast(m); setTimeout(() => setToast(''), 1800); }
 
   // 민감정보 확인 → 생성
-  function requestGenerate({ withAnswers = false, keepLocked = false } = {}) {
+  function requestGenerate({ withAnswers = false, keepLocked = false, force = false } = {}) {
     const text = input.trim();
     if (!text || loading) return;
+    // 로그인 전: 예시 문구는 고정 결과물로 바로 보여 줌(AI 호출 없음)
+    if (!force && !access?.access) {
+      const demo = findDemo(text);
+      if (demo) {
+        setResult({ sections: demo.sections, questions: [], engine: { provider: 'demo', model: '예시' }, trail: [], demo: true });
+        setSections(demo.sections); setLocked({}); setFullEdited(false);
+        if (!purposeTouched) setPurpose(demo.purpose);
+        setTimeout(() => resultRef.current?.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+        return;
+      }
+    }
+    // 그 외 문장은 생성할 때만 로그인 요구
+    if (!force && !access?.access) { pendingRef.current = { withAnswers, keepLocked }; setLoginOpen(true); return; }
     const ans = withAnswers ? answers : {};
     const found = detectSensitive([text, ...Object.values(ans)].join('\n'));
     const run = (mask) => generate({
@@ -108,7 +137,7 @@ export default function Page() {
         body: JSON.stringify({ input: text, purpose, engine, answers: ans, locked: lockedPayload }),
       });
       const j = await r.json();
-      if (j.needAccess) { setAccess((a) => ({ ...a, access: false })); return; }
+      if (j.needAccess) { setAccess((a) => ({ ...a, access: false })); pendingRef.current = { keepLocked }; setLoginOpen(true); return; }
       if (!r.ok) throw new Error(j.error || '생성 실패');
       setResult(j);
       setFullEdited(false);
@@ -166,22 +195,19 @@ export default function Page() {
 
   const engineLabel = engine === 'auto' ? '자동' : (providers.find((p) => p.id === engine)?.label || engine);
   const configuredCount = providers.filter((p) => p.configured).length;
-  const gated = !access || !access.access;
 
   return (
     <div className="app">
       <header className="top">
         <div className="brand">한줄설계<small>프롬프트 1앱</small></div>
-        {!gated && (
+        {access?.access && (
           <button className="engine-pill" onClick={() => setTab('settings')} aria-label="AI 엔진 설정">
             엔진: {engineLabel}{configuredCount ? '' : ' · 기본'}
           </button>
         )}
       </header>
 
-      {gated && tab !== 'admin' && <Gate status={access} onOk={checkAccess} openAdmin={() => setTab('admin')} msg={authMsg} />}
-
-      {!gated && tab === 'make' && (
+      {tab === 'make' && (
         <main>
           <h2 className="title">하고 싶은 일을<br />한 줄로 적어 주세요</h2>
           <p className="sub">역할·맥락·입력·처리·출력·검증·보안을 갖춘 프롬프트로 바꿔 드립니다.</p>
@@ -198,7 +224,7 @@ export default function Page() {
 
           {!input && !result && (
             <>
-              <div className="label">예시로 시작하기</div>
+              <div className="label">예시로 시작하기{!access?.access && <span className="note" style={{ fontWeight: 400 }}> · 로그인 없이 결과 미리보기</span>}</div>
               {EXAMPLES.map((ex) => <button key={ex} className="ex" onClick={() => setInput(ex)}>{ex}</button>)}
             </>
           )}
@@ -228,7 +254,7 @@ export default function Page() {
           {result && (
             <section ref={resultRef} className="stack" style={{ marginTop: 24, scrollMarginTop: 70 }}>
               <div className="trail">
-                {result.fromHistory ? '저장된 내역' : (
+                {result.demo ? <><b>예시 결과</b> · 로그인 없이 보는 고정 결과물입니다. 직접 쓴 문장은 로그인 후 AI가 설계합니다.</> : result.fromHistory ? '저장된 내역' : (
                   <>생성 엔진: <b>{result.engine?.provider === 'template' ? '규칙 기반(오프라인)' : `${labelOf(providers, result.engine?.provider)} · ${result.engine?.model}`}</b>
                     {result.trail?.some((t) => !t.ok) && <> · 자동 전환 {result.trail.filter((t) => !t.ok).length}회</>}
                     {result.fallback && <> · AI 연결 실패 또는 미설정으로 템플릿 초안</>}
@@ -322,7 +348,7 @@ export default function Page() {
         </main>
       )}
 
-      {!gated && tab === 'history' && (
+      {tab === 'history' && (
         <main>
           <h2 className="title">최근 생성 내역</h2>
           <p className="sub">이 기기의 브라우저에만 보관됩니다. 서버에는 저장하지 않습니다.</p>
@@ -343,15 +369,15 @@ export default function Page() {
         </main>
       )}
 
-      {!gated && tab === 'settings' && (
+      {tab === 'settings' && (
         <Settings providers={providers} engine={engine} setEngine={(e) => { setEngine(e); lsSet(LS.engine, e); }}
           openAdmin={() => setTab('admin')} access={access}
           onLogout={async () => { try { await api('/api/access/logout', {}); } catch {} showToast('로그아웃했습니다'); checkAccess(); }} />
       )}
 
-      {tab === 'admin' && <Admin onBack={() => setTab(gated ? 'make' : 'settings')} onChanged={() => { checkAccess(); }} toast={showToast} google={Boolean(access?.google)} msg={authMsg} />}
+      {tab === 'admin' && <Admin onBack={() => setTab('settings')} onChanged={() => { checkAccess(); }} toast={showToast} google={Boolean(access?.google)} msg={authMsg} />}
 
-      {!gated && tab === 'make' && result && (
+      {tab === 'make' && result && (
         <div className="actionbar"><div className="inner">
           <button className="btn primary" onClick={copy}>복사</button>
           <button className="btn" onClick={share}>공유</button>
@@ -360,11 +386,21 @@ export default function Page() {
         </div></div>
       )}
 
-      {!gated && <nav className="nav"><div className="inner">
+      <nav className="nav"><div className="inner">
         <NavBtn on={tab === 'make'} onClick={() => setTab('make')} label="만들기" d="M12 5v14M5 12h14" />
         <NavBtn on={tab === 'history'} onClick={() => setTab('history')} label="내역" d="M4 6h16M4 12h16M4 18h10" />
         <NavBtn on={tab === 'settings' || tab === 'admin'} onClick={() => setTab('settings')} label="엔진 설정" d="M12 15a3 3 0 1 0 0-6 3 3 0 0 0 0 6zM19 12h2M3 12h2M12 3v2M12 19v2" />
-      </div></nav>}
+      </div></nav>
+
+      {loginOpen && (
+        <div className="sheet-bg" onClick={() => setLoginOpen(false)}>
+          <div className="sheet" onClick={(e) => e.stopPropagation()} role="dialog" aria-modal="true">
+            <Gate status={access} onOk={afterLogin} msg={authMsg}
+              onGoogle={() => { try { sessionStorage.setItem('hj.draft', JSON.stringify({ input, purpose })); } catch {} }}
+              openAdmin={() => { setLoginOpen(false); setTab('admin'); }} onClose={() => { setLoginOpen(false); pendingRef.current = null; }} />
+          </div>
+        </div>
+      )}
 
       {sens && (
         <div className="sheet-bg" onClick={() => setSens(null)}>
@@ -440,7 +476,7 @@ function Settings({ providers, engine, setEngine, openAdmin, access, onLogout })
 
       <div className="label">연결 상태 · 전환 순서</div>
       <div className="card">
-        {providers.length === 0 && <div className="note">불러오는 중…</div>}
+        {providers.length === 0 && <div className="note">{access && !access.access ? '로그인하면 연결 상태가 표시됩니다.' : '불러오는 중…'}</div>}
         {providers.map((p, i) => (
           <div key={p.id} className="prov">
             <span>{i + 1}. {p.label} <span className="note">{p.model}</span></span>
@@ -685,11 +721,11 @@ function ChangePw({ busy, onSubmit }) {
 }
 
 // 비인증 사용자 입장 화면
-function Gate({ status, onOk, openAdmin, msg }) {
+function Gate({ status, onOk, openAdmin, msg, onGoogle, onClose }) {
   const [code, setCode] = useState('');
   const [err, setErr] = useState('');
   const [busy, setBusy] = useState(false);
-  if (!status) return <main><div className="note" style={{ marginTop: 40, textAlign: 'center' }}>확인 중…</div></main>;
+  if (!status) return <div className="note" style={{ textAlign: 'center' }}>확인 중…</div>;
   async function submit(e) {
     e.preventDefault(); setBusy(true); setErr('');
     try { await api('/api/access/login', { code }); setCode(''); await onOk(); }
@@ -697,13 +733,16 @@ function Gate({ status, onOk, openAdmin, msg }) {
     finally { setBusy(false); }
   }
   return (
-    <main>
-      <h2 className="title">로그인이 필요합니다</h2>
-      <p className="sub">이 앱은 허용된 사용자만 쓸 수 있습니다. 한 번 로그인하면 이 기기에서 30일간 유지됩니다.</p>
+    <div>
+      <div className="sec-head">
+        <h3>프롬프트를 만들려면 로그인하세요</h3>
+        <button className="btn sm ghost" onClick={onClose} aria-label="닫기">✕</button>
+      </div>
+      <p className="note" style={{ marginTop: 0 }}>허용된 사용자만 생성할 수 있습니다. 한 번 로그인하면 이 기기에서 30일간 유지됩니다.</p>
       {msg && <p className="note" style={{ color: msg.ok ? 'var(--ok)' : 'var(--err)', fontSize: 14 }} role="alert">{msg.text}</p>}
       {status.google && (
         <>
-          <a className="btn block google" href="/api/auth/google/start"><GoogleMark /> Google 계정으로 로그인</a>
+          <a className="btn block google" href="/api/auth/google/start" onClick={onGoogle}><GoogleMark /> Google 계정으로 로그인</a>
           <div className="or"><span>또는 접근 암호</span></div>
         </>
       )}
@@ -713,8 +752,8 @@ function Gate({ status, onOk, openAdmin, msg }) {
         {err && <p className="note" style={{ color: 'var(--err)' }} role="alert">{err}</p>}
         <button className="btn primary block" style={{ marginTop: 12 }} disabled={busy || !code}>{busy ? <span className="spinner" /> : '입장'}</button>
       </form>
-      <button className="btn block ghost" style={{ marginTop: 16 }} onClick={openAdmin}>관리자 로그인</button>
-    </main>
+      <button className="btn block ghost" style={{ marginTop: 12 }} onClick={openAdmin}>관리자 로그인</button>
+    </div>
   );
 }
 
